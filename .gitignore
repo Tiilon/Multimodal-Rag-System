@@ -13,3 +13,4 @@ extracted_elements
 .mypy_cache
 .env
 rag_storage
+qdrant_storage

@@ -1,3 +1,5 @@
+from typing import Optional
+
 from pydantic_settings import BaseSettings
 
 
@@ -6,7 +8,10 @@ class RAGConfig(BaseSettings):
     collection_name: str = "documents"
 
     # Vector store config
-    vector_store_type: str = "chroma"
+    vector_store_type: str = "qdrant"
+    qdrant_path: str = "./qdrant_storage"
+    qdrant_url: Optional[str] = None  # Assign value to use client instead of local
+    qdrant_api_key: Optional[str] = ""
 
     # Embedding config
     embedding_type: str = "ollama"

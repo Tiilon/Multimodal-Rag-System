@@ -67,6 +67,9 @@ def process_documents():
     return doc_summary
 
 
+# process_documents()
+
+
 def main():
     # Setup
     logging.basicConfig(level=logging.INFO)
@@ -75,27 +78,27 @@ def main():
     rag = RAGPipeline()
 
     # Test different search types
-    print("\n🔍 Testing multimodal search...")
+    print("\nTesting multimodal search...")
 
     # General search
     test_query = "What information is in these documents?"
     results = rag.search(test_query, k=3)
-    print(f"\n📝 General search results for '{test_query}': {len(results)} results")
+    print(f"\nGeneral search results for '{test_query}': {len(results)} results")
 
     # Table-specific search
     table_results = rag.query_tables("Show me data tables", k=2)
-    print(f"\n📊 Table search results: {len(table_results)} tables found")
+    print(f"\nTable search results: {len(table_results)} tables found")
     for i, doc in enumerate(table_results):
         print(f"  Table {i + 1}: {doc.page_content[:100]}...")
 
     # Image-specific search
-    image_results = rag.query_images("Describe the images", k=2)
-    print(f"\n🖼️ Image search results: {len(image_results)} images found")
+    image_results = rag.query_images("Show me diagrams and pictures", k=2)
+    print(f"\nImage search results: {len(image_results)} images found")
     for i, doc in enumerate(image_results):
         print(f"  Image {i + 1}: {doc.page_content[:100]}...")
 
     # Test RAG with Ollama LLM
-    print("\n🤖 Testing RAG with Ollama LLM...")
+    print("\nTesting RAG with Ollama LLM...")
     answer = rag.answer_query("Explain the image in page 3")
     print(f"\nAnswer: {answer}")
 
@@ -104,3 +107,11 @@ def main():
 
 if __name__ == "__main__":
     rag_pipeline = main()
+
+    # Cleanup QdrantClient to prevent shutdown ImportError
+    if (
+        hasattr(rag_pipeline, "vector_store")
+        and hasattr(rag_pipeline.vector_store, "vector_store")
+        and hasattr(rag_pipeline.vector_store.vector_store, "client")
+    ):
+        rag_pipeline.vector_store.vector_store.client.close()
