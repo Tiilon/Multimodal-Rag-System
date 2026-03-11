@@ -1,0 +1,9 @@
+{
+  "pdf_test.pdf": {
+    "path": "c:\\Users\\user\\Documents\\Codes\\Personal\\rag_system\\data\\pdf_test.pdf",
+    "pages": 9,
+    "tables": 3,
+    "images": 5,
+    "chunks": 49
+  }
+}
