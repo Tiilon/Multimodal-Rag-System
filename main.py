@@ -306,7 +306,7 @@ class RAGPipeline:
 
                 # Export table data to structured format
                 try:
-                    table_df = element.export_to_dataframe()
+                    table_df = element.export_to_dataframe(doc=document)
                     if table_df is not None and not table_df.empty:
                         # Save CSV
                         table_df.to_csv(output_dir / f"table_{element.label}.csv")
