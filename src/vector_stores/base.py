@@ -30,3 +30,7 @@ class BaseVectorStore(ABC):
     @abstractmethod
     def count_documents(self) -> int:
         pass
+
+    @abstractmethod
+    def delete_collection(self, collection_name: str) -> bool:
+        pass

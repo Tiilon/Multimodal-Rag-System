@@ -154,3 +154,20 @@ class QdrantStore(BaseVectorStore):
             ).count
         except Exception:
             return 0
+
+    def delete_collection(self, collection_name: str) -> bool:
+        try:
+            if self.config.qdrant_url:
+                client = QdrantClient(
+                    url=self.config.qdrant_url,
+                    api_key=self.config.qdrant_api_key,
+                )
+            else:
+                client = QdrantClient(path=self.config.qdrant_path)
+            
+            client.delete_collection(collection_name=collection_name)
+            _log.info(f"Deleted Qdrant collection: {collection_name}")
+            return True
+        except Exception as e:
+            _log.error(f"Failed to delete Qdrant collection '{collection_name}': {e}")
+            return False

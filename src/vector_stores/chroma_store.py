@@ -92,3 +92,14 @@ class ChromaVectorStore(BaseVectorStore):
             return self.vector_store._collection.count()
         except Exception:
             return 0
+
+    def delete_collection(self, collection_name: str) -> bool:
+        try:
+            import chromadb
+            client = chromadb.PersistentClient(path=self.config.persist_directory)
+            client.delete_collection(name=collection_name)
+            _log.info(f"Deleted Chroma collection: {collection_name}")
+            return True
+        except Exception as e:
+            _log.error(f"Failed to delete Chroma collection '{collection_name}': {e}")
+            return False
