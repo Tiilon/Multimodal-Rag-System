@@ -10,3 +10,4 @@ wheels/
 .venv
 rag_db
 extracted_elements
+.mypy_cache
