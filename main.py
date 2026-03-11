@@ -10,10 +10,7 @@ load_dotenv()
 _log = logging.getLogger(__name__)
 
 
-def main():
-    # Setup
-    logging.basicConfig(level=logging.INFO)
-
+def process_documents():
     data_folder = Path(__file__).parent / "data"
 
     # Only process files that actually exist
@@ -24,7 +21,6 @@ def main():
         # "pptx_test.pptx",
         # "csv_test.csv",
     ]
-
     input_doc_paths = []
     for filename in potential_files:
         file_path = data_folder / filename
@@ -54,6 +50,30 @@ def main():
         print("⚠️ No documents found to process.")
         return rag
 
+    # Test filtered search
+    print("\n🎯 Testing filtered search...")
+    if doc_summary:
+        first_doc = list(doc_summary.keys())[0]
+        filtered_results = rag.search_with_filter(
+            "content", k=2, filter_dict={"document": first_doc}
+        )
+        print(f"Found {len(filtered_results)} results in '{first_doc}'")
+
+    # Save metadata
+    with open("./document_store_metadata.json", "w") as f:
+        json.dump(doc_summary, f, indent=2)
+    print("\n💾 Document metadata saved to document_store_metadata.json")
+
+    return doc_summary
+
+
+def main():
+    # Setup
+    logging.basicConfig(level=logging.INFO)
+
+    # Initialize RAG pipeline using the new modular structure (config based)
+    rag = RAGPipeline()
+
     # Test different search types
     print("\n🔍 Testing multimodal search...")
 
@@ -76,22 +96,8 @@ def main():
 
     # Test RAG with Ollama LLM
     print("\n🤖 Testing RAG with Ollama LLM...")
-    answer = rag.answer_query("Tell me about the tables and images in these documents")
+    answer = rag.answer_query("Explain the image in page 3")
     print(f"\nAnswer: {answer}")
-
-    # Test filtered search
-    print("\n🎯 Testing filtered search...")
-    if doc_summary:
-        first_doc = list(doc_summary.keys())[0]
-        filtered_results = rag.search_with_filter(
-            "content", k=2, filter_dict={"document": first_doc}
-        )
-        print(f"Found {len(filtered_results)} results in '{first_doc}'")
-
-    # Save metadata
-    with open("./document_store_metadata.json", "w") as f:
-        json.dump(doc_summary, f, indent=2)
-    print("\n💾 Document metadata saved to document_store_metadata.json")
 
     return rag
 

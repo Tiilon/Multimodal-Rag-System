@@ -4,16 +4,17 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from langchain_core.documents import Document
 from docling_core.types.doc import PictureItem, TableItem
+from langchain_core.documents import Document
 
 from src.core.config import config
-from src.models.factory import ModelFactory
-from src.vector_stores.factory import VectorStoreFactory
 from src.document_processing.chunker import DocumentChunker
 from src.document_processing.parser import DocumentParser
+from src.models.factory import ModelFactory
+from src.vector_stores.factory import VectorStoreFactory
 
 _log = logging.getLogger(__name__)
+
 
 class RAGPipeline:
     def __init__(self):
@@ -21,7 +22,7 @@ class RAGPipeline:
         self.embeddings_model = ModelFactory.get_embeddings(config)
         self.llm_model = ModelFactory.get_llm(config)
         self.vision_model = ModelFactory.get_vision_model(config)
-        
+
         # Initialize vector store
         self.vector_store = VectorStoreFactory.get_vector_store(config)
         self.vector_store.init_store(self.embeddings_model.get_embeddings())
@@ -39,7 +40,7 @@ class RAGPipeline:
             return {}
 
         start_time = time.time()
-        
+
         _log.info(f"Converting {len(doc_paths)} documents...")
         conv_results = self.parser.convert_all(doc_paths)
 
@@ -54,7 +55,9 @@ class RAGPipeline:
             doc_name = Path(doc_path).name
             _log.info(f"Processing {doc_name}...")
 
-            visual_elements = self.parser.extract_visual_elements(result.document, doc_name)
+            visual_elements = self.parser.extract_visual_elements(
+                result.document, doc_name
+            )
             table_documents = visual_elements.get("tables", [])
             image_documents = visual_elements.get("images", [])
 
@@ -62,9 +65,21 @@ class RAGPipeline:
             _log.info(f"Created {len(chunks)} chunks from {doc_name}")
 
             for chunk_idx, chunk in enumerate(chunks):
-                page_numbers = list(chunk.meta.page_numbers) if hasattr(chunk.meta, "page_numbers") and chunk.meta.page_numbers else []
-                tables = list(chunk.meta.tables) if hasattr(chunk.meta, "tables") and chunk.meta.tables else []
-                pictures = list(chunk.meta.pictures) if hasattr(chunk.meta, "pictures") and chunk.meta.pictures else []
+                page_numbers = (
+                    list(chunk.meta.page_numbers)
+                    if hasattr(chunk.meta, "page_numbers") and chunk.meta.page_numbers
+                    else []
+                )
+                tables = (
+                    list(chunk.meta.tables)
+                    if hasattr(chunk.meta, "tables") and chunk.meta.tables
+                    else []
+                )
+                pictures = (
+                    list(chunk.meta.pictures)
+                    if hasattr(chunk.meta, "pictures") and chunk.meta.pictures
+                    else []
+                )
 
                 metadata = {
                     "document": doc_name,
@@ -85,8 +100,20 @@ class RAGPipeline:
             self.document_metadata[doc_name] = {
                 "path": doc_path,
                 "pages": len(result.document.pages),
-                "tables": len([e for e, _ in result.document.iterate_items() if isinstance(e, TableItem)]),
-                "images": len([e for e, _ in result.document.iterate_items() if isinstance(e, PictureItem)]),
+                "tables": len(
+                    [
+                        e
+                        for e, _ in result.document.iterate_items()
+                        if isinstance(e, TableItem)
+                    ]
+                ),
+                "images": len(
+                    [
+                        e
+                        for e, _ in result.document.iterate_items()
+                        if isinstance(e, PictureItem)
+                    ]
+                ),
                 "chunks": len(chunks),
             }
 
@@ -97,7 +124,9 @@ class RAGPipeline:
             all_langchain_docs.extend(image_documents)
 
         if all_langchain_docs:
-            _log.info(f"Adding {len(all_langchain_docs)} total items to vector store...")
+            _log.info(
+                f"Adding {len(all_langchain_docs)} total items to vector store..."
+            )
             self.vector_store.add_documents(all_langchain_docs)
         else:
             _log.warning("No documents were successfully processed")
@@ -110,12 +139,16 @@ class RAGPipeline:
     def search(self, query: str, k: int = 5) -> List[Document]:
         return self.vector_store.search(query, k=k)
 
-    def search_by_type(self, query: str, content_type: str, k: int = 5) -> List[Document]:
+    def search_by_type(
+        self, query: str, content_type: str, k: int = 5
+    ) -> List[Document]:
         return self.vector_store.search_by_type(query, content_type, k=k)
 
-    def search_with_filter(self, query: str, k: int = 5, filter_dict: Optional[Dict] = None) -> List[Document]:
+    def search_with_filter(
+        self, query: str, k: int = 5, filter_dict: Optional[Dict] = None
+    ) -> List[Document]:
         return self.vector_store.search_with_filter(query, k=k, filter_dict=filter_dict)
-        
+
     def get_retriever(self, k: int = 5):
         return self.vector_store.get_retriever(k=k)
 
@@ -131,7 +164,10 @@ class RAGPipeline:
             content_type = doc.metadata.get("content_type", "text")
 
             page_info = ""
-            if doc.metadata.get("page_numbers") and doc.metadata["page_numbers"] != "[]":
+            if (
+                doc.metadata.get("page_numbers")
+                and doc.metadata["page_numbers"] != "[]"
+            ):
                 page_info = f" (page {doc.metadata['page_numbers']})"
 
             type_indicator = f"[{content_type.upper()}]"
@@ -163,14 +199,24 @@ class RAGPipeline:
             response = llm.invoke(prompt)
 
             docs = self.search(query, k=k)
-            sources = list(set([doc.metadata.get("document", "Unknown") for doc in docs]))
-            content_types = list(set([doc.metadata.get("content_type", "text") for doc in docs]))
+            sources = list(
+                set([doc.metadata.get("document", "Unknown") for doc in docs])
+            )
+            content_types = list(
+                set([doc.metadata.get("content_type", "text") for doc in docs])
+            )
 
-            response_content = response.content if hasattr(response, "content") else str(response)
+            response_content = (
+                response.content if hasattr(response, "content") else str(response)
+            )
 
             if sources:
-                response_content = f"{response_content}\n\n📚 Sources: {', '.join(sources)}"
-                response_content = f"{response_content}\n📄 Content types: {', '.join(content_types)}"
+                response_content = (
+                    f"{response_content}\n\n📚 Sources: {', '.join(sources)}"
+                )
+                response_content = (
+                    f"{response_content}\n📄 Content types: {', '.join(content_types)}"
+                )
 
             return response_content
         except Exception as e:
