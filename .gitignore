@@ -9,3 +9,4 @@ wheels/
 # Virtual environments
 .venv
 rag_db
+extracted_elements

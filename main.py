@@ -1,3 +1,4 @@
+import base64
 import json
 import logging
 import time
@@ -13,9 +14,10 @@ from docling.document_converter import DocumentConverter, PdfFormatOption
 from docling_core.types.doc import PictureItem, TableItem
 from langchain_chroma import Chroma
 from langchain_core.documents import Document
+from langchain_core.messages import HumanMessage
 
 # LangChain imports
-from langchain_ollama import OllamaEmbeddings, OllamaLLM
+from langchain_ollama import ChatOllama, OllamaEmbeddings
 from sentence_transformers import SentenceTransformer
 
 # Configure logging
@@ -30,6 +32,7 @@ class RAGPipeline:
         collection_name: str = "documents",
         ollama_embedding_model: str = "nomic-embed-text",
         ollama_llm_model: str = "llama3.2:latest",
+        ollama_vision_model: str = "qwen3.5:0.8b",
         ollama_base_url: str = "http://localhost:11434",
     ):
         """Initialize the RAG pipeline with Docling and LangChain Ollama"""
@@ -39,7 +42,12 @@ class RAGPipeline:
         self.collection_name = collection_name
         self.ollama_embedding_model = ollama_embedding_model
         self.ollama_llm_model = ollama_llm_model
+        self.ollama_vision_model = ollama_vision_model
         self.ollama_base_url = ollama_base_url
+
+        # These will accumulate during document processing
+        self.table_documents: List[Document] = []
+        self.image_documents: List[Document] = []
 
         # Initialize LangChain Ollama components
         self.embeddings = OllamaEmbeddings(
@@ -47,11 +55,17 @@ class RAGPipeline:
             base_url=ollama_base_url,
         )
 
-        self.llm = OllamaLLM(
+        self.llm = ChatOllama(
             model=ollama_llm_model,
             base_url=ollama_base_url,
             temperature=0.1,
             num_predict=2048,
+        )
+
+        self.vision_model = ChatOllama(
+            model=ollama_vision_model,
+            base_url=ollama_base_url,
+            temperature=0.1,
         )
 
         # Initialize Docling converter
@@ -76,14 +90,13 @@ class RAGPipeline:
         )
 
         self.chunker = HybridChunker(
-            tokenizer=self.tokenizer_model.tokenizer,
-            merge_peers=True,
+            tokenizer=self.tokenizer_model.tokenizer, merge_peers=True
         )
 
         # Initialize or load vector store
         self._init_vector_store()
 
-        # Store for document metadata (not the vector store itself)
+        # Store for document metadata
         self.document_metadata: Dict[str, Any] = {}
 
     def _init_vector_store(self):
@@ -108,6 +121,10 @@ class RAGPipeline:
 
         start_time = time.time()
 
+        # Reset accumulators for new processing run
+        self.table_documents = []
+        self.image_documents = []
+
         # Step 1: Convert all documents
         _log.info(f"Converting {len(doc_paths)} documents...")
         conv_results = self.doc_converter.convert_all(doc_paths, raises_on_error=False)
@@ -124,7 +141,7 @@ class RAGPipeline:
             doc_name = Path(doc_path).name
             _log.info(f"Processing {doc_name}...")
 
-            # Step 3: Extract and save tables/images for reference
+            # Step 3: Extract and save tables/images with captions
             self._extract_visual_elements(result.document, doc_name)
 
             # Step 4: Chunk the document
@@ -159,6 +176,7 @@ class RAGPipeline:
                     "table_count": len(tables),
                     "has_images": str(len(pictures) > 0),
                     "image_count": len(pictures),
+                    "content_type": "text",  # Add content type for filtering
                 }
 
                 # Create LangChain Document
@@ -186,9 +204,18 @@ class RAGPipeline:
                 "chunks": len(chunks),
             }
 
+        # Add table and image documents
+        _log.info(f"Generated {len(self.table_documents)} table documents")
+        _log.info(f"Generated {len(self.image_documents)} image documents")
+
+        all_langchain_docs.extend(self.table_documents)
+        all_langchain_docs.extend(self.image_documents)
+
         # Step 6: Add all documents to vector store
         if all_langchain_docs:
-            _log.info(f"Adding {len(all_langchain_docs)} chunks to vector store...")
+            _log.info(
+                f"Adding {len(all_langchain_docs)} total items to vector store..."
+            )
 
             # Add in batches to avoid memory issues
             batch_size = 100
@@ -209,16 +236,50 @@ class RAGPipeline:
 
     def _table_to_text(self, table_df):
         """Convert table dataframe into semantic text for embedding"""
+        if table_df is None or table_df.empty:
+            return "Empty table"
 
-        columns = ", ".join(table_df.columns)
+        columns = ", ".join(str(col) for col in table_df.columns)
 
         rows = []
         for _, row in table_df.iterrows():
             row_text = ", ".join(f"{col} = {row[col]}" for col in table_df.columns)
             rows.append(row_text)
 
-        table_text = f"Table with columns: {columns}.\nRows:\n" + "\n".join(rows)
+        table_text = f"Table with columns: {columns}.\nRows:\n" + "\n".join(
+            rows[:20]
+        )  # Limit to first 20 rows
         return table_text
+
+    def _encode_image(self, image_path):
+        """Encode image to base64"""
+        with open(image_path, "rb") as image_file:
+            return base64.b64encode(image_file.read()).decode("utf-8")
+
+    def _caption_image(self, image_path):
+        """Generate caption for image using vision model"""
+        try:
+            base64_image = self._encode_image(image_path)
+            response = self.vision_model.invoke(
+                [
+                    HumanMessage(
+                        content=[
+                            {
+                                "type": "text",
+                                "text": "Describe this image in detail, including any text, charts, or visual elements.",
+                            },
+                            {
+                                "type": "image_url",
+                                "image_url": f"data:image/jpeg;base64,{base64_image}",
+                            },
+                        ]
+                    )
+                ]
+            )
+            return response.content
+        except Exception as e:
+            _log.error(f"Failed to caption image {image_path}: {e}")
+            return "Image captioning failed"
 
     def _extract_visual_elements(self, document, doc_name: str):
         """Extract and save tables and images for later reference"""
@@ -228,12 +289,18 @@ class RAGPipeline:
         tables_data = []
 
         for element, _level in document.iterate_items():
+            # Get page number from element provenance
+            page_number = None
+            if hasattr(element, "prov") and element.prov:
+                # Get the first provenance item's page number
+                page_number = element.prov[0].page_no if element.prov[0] else None
             if isinstance(element, TableItem):
                 # Save table as image
                 try:
                     table_img = element.get_image(document)
                     if table_img:
-                        table_img.save(output_dir / f"table_{element.label}.png")
+                        img_path = output_dir / f"table_{element.label}.png"
+                        table_img.save(img_path)
                 except Exception as e:
                     _log.debug(f"Could not save table image: {e}")
 
@@ -241,7 +308,28 @@ class RAGPipeline:
                 try:
                     table_df = element.export_to_dataframe()
                     if table_df is not None and not table_df.empty:
+                        # Save CSV
                         table_df.to_csv(output_dir / f"table_{element.label}.csv")
+
+                        # Convert table to text
+                        table_text = self._table_to_text(table_df)
+
+                        # Create document with table content
+                        table_doc = Document(
+                            page_content=table_text,
+                            metadata={
+                                "document": doc_name,
+                                "type": "table",
+                                "table_label": element.label,
+                                "content_type": "table",
+                                "source_file": f"table_{element.label}.csv",
+                                "page_number": page_number,
+                                "page_numbers": json.dumps([page_number])
+                                if page_number
+                                else "[]",
+                            },
+                        )
+                        self.table_documents.append(table_doc)
 
                         tables_data.append(
                             {
@@ -260,9 +348,31 @@ class RAGPipeline:
                 try:
                     img = element.get_image(document)
                     if img:
-                        img.save(output_dir / f"image_{element.label}.png")
+                        img_path = output_dir / f"image_{element.label}.png"
+                        img.save(img_path)
+
+                        # Generate caption
+                        caption = self._caption_image(img_path)
+
+                        # Create document with image description
+                        image_doc = Document(
+                            page_content=f"Image description: {caption}",
+                            metadata={
+                                "document": doc_name,
+                                "type": "image",
+                                "image_label": element.label,
+                                "content_type": "image",
+                                "image_path": str(img_path),
+                                "page_number": page_number,  # Store as integer for filtering
+                                "page_numbers": json.dumps([page_number])
+                                if page_number
+                                else "[]",
+                            },
+                        )
+
+                        self.image_documents.append(image_doc)
                 except Exception as e:
-                    _log.debug(f"Could not save image: {e}")
+                    _log.debug(f"Could not process image: {e}")
 
         if tables_data:
             with open(output_dir / "tables_metadata.json", "w") as f:
@@ -272,28 +382,36 @@ class RAGPipeline:
 
     def search(self, query: str, k: int = 5) -> List[Document]:
         """Search for relevant documents using similarity search"""
-
         try:
-            # Perform similarity search with scores
             results = self.vector_store.similarity_search_with_score(query, k=k)
 
-            # Add scores to metadata and return
             docs_with_scores = []
             for doc, score in results:
                 doc.metadata["relevance_score"] = float(score)
                 docs_with_scores.append(doc)
 
             return docs_with_scores
-
         except Exception as e:
             _log.error(f"Search failed: {e}")
+            return []
+
+    def search_by_type(
+        self, query: str, content_type: str, k: int = 5
+    ) -> List[Document]:
+        """Search within specific content types (text, table, image)"""
+        try:
+            results = self.vector_store.similarity_search(
+                query, k=k, filter={"content_type": content_type}
+            )
+            return results
+        except Exception as e:
+            _log.error(f"Typed search failed: {e}")
             return []
 
     def search_with_filter(
         self, query: str, k: int = 5, filter_dict: Optional[Dict] = None
     ) -> List[Document]:
         """Search with metadata filters"""
-
         try:
             results = self.vector_store.similarity_search(
                 query, k=k, filter=filter_dict
@@ -309,7 +427,6 @@ class RAGPipeline:
 
     def get_rag_context(self, query: str, k: int = 5) -> str:
         """Get formatted context for RAG"""
-
         docs = self.search(query, k=k)
 
         if not docs:
@@ -318,6 +435,8 @@ class RAGPipeline:
         context_parts = []
         for i, doc in enumerate(docs):
             source = doc.metadata.get("document", "Unknown")
+            content_type = doc.metadata.get("content_type", "text")
+
             page_info = ""
             if (
                 doc.metadata.get("page_numbers")
@@ -325,23 +444,24 @@ class RAGPipeline:
             ):
                 page_info = f" (page {doc.metadata['page_numbers']})"
 
+            # Add type indicator
+            type_indicator = f"[{content_type.upper()}]"
+
             context_parts.append(
-                f"[{i + 1}] From {source}{page_info}:\n{doc.page_content}\n"
+                f"[{i + 1}] {type_indicator} From {source}{page_info}:\n{doc.page_content}\n"
             )
 
         return "\n".join(context_parts)
 
     def answer_query(self, query: str, temperature: float = 0.1, k: int = 5) -> str:
         """Generate answer using RAG with Ollama LLM"""
-
-        # Get relevant context
         context = self.get_rag_context(query, k=k)
 
         if context == "No relevant documents found.":
             return "I couldn't find any relevant information in the documents to answer your question."
 
-        # Create prompt for Ollama
         prompt = f"""Answer the question based on the following context. If the context doesn't contain relevant information, say so.
+
                     Context:
                     {context}
 
@@ -351,23 +471,42 @@ class RAGPipeline:
                 """
 
         try:
-            # Generate response using Ollama
             response = self.llm.invoke(prompt)
 
-            # Add source information
+            # Get sources for attribution
             docs = self.search(query, k=k)
             sources = list(
                 set([doc.metadata.get("document", "Unknown") for doc in docs])
             )
 
+            content_types = list(
+                set([doc.metadata.get("content_type", "text") for doc in docs])
+            )
+
+            response_content = (
+                response.content if hasattr(response, "content") else str(response)
+            )
+
             if sources:
-                response = f"{response}\n\nSources: {', '.join(sources)}"
+                response_content = (
+                    f"{response_content}\n\n📚 Sources: {', '.join(sources)}"
+                )
+                response_content = (
+                    f"{response_content}\n📄 Content types: {', '.join(content_types)}"
+                )
 
-            return response
-
+            return response_content
         except Exception as e:
             _log.error(f"Failed to generate answer: {e}")
             return f"Error generating answer: {e}"
+
+    def query_tables(self, query: str, k: int = 3) -> List[Document]:
+        """Search only table documents"""
+        return self.search_by_type(query, "table", k)
+
+    def query_images(self, query: str, k: int = 3) -> List[Document]:
+        """Search only image documents"""
+        return self.search_by_type(query, "image", k)
 
     def get_document_summary(self) -> Dict[str, Any]:
         """Get summary of processed documents"""
@@ -410,6 +549,7 @@ def main():
         collection_name="my_documents",
         ollama_embedding_model="nomic-embed-text",
         ollama_llm_model="llama3.2",
+        ollama_vision_model="qwen3.5:0.8b",  # Better for vision tasks
         ollama_base_url="http://localhost:11434",
     )
 
@@ -425,33 +565,37 @@ def main():
                 f"{info['images']} images, {info['chunks']} chunks"
             )
 
-        print(f"\nTotal chunks in vector store: {rag.count_documents()}")
+        print(f"\nTotal items in vector store: {rag.count_documents()}")
     else:
         print("⚠️ No documents found to process.")
         return rag
 
-    # Test search
-    print("\n🔍 Testing search functionality...")
+    # Test different search types
+    print("\n🔍 Testing multimodal search...")
+
+    # General search
     test_query = "What information is in these documents?"
     results = rag.search(test_query, k=3)
+    print(f"\n📝 General search results for '{test_query}': {len(results)} results")
 
-    if results:
-        print(f"\nTop 3 results for '{test_query}':")
-        for i, doc in enumerate(results):
-            print(
-                f"\n{i + 1}. [{doc.metadata.get('document', 'Unknown')}] "
-                f"(score: {doc.metadata.get('relevance_score', 'N/A'):.3f}):"
-            )
-            print(f"   {doc.page_content[:150]}...")
-    else:
-        print("No search results found.")
+    # Table-specific search
+    table_results = rag.query_tables("Show me data tables", k=2)
+    print(f"\n📊 Table search results: {len(table_results)} tables found")
+    for i, doc in enumerate(table_results):
+        print(f"  Table {i + 1}: {doc.page_content[:100]}...")
+
+    # Image-specific search
+    image_results = rag.query_images("Describe the images", k=2)
+    print(f"\n🖼️ Image search results: {len(image_results)} images found")
+    for i, doc in enumerate(image_results):
+        print(f"  Image {i + 1}: {doc.page_content[:100]}...")
 
     # Test RAG with Ollama LLM
     # print("\n🤖 Testing RAG with Ollama LLM...")
     # answer = rag.answer_query("Tell me about the tables and images in these documents")
     # print(f"\nAnswer: {answer}")
 
-    # Test filtered search (if you want to search within specific documents)
+    # Test filtered search
     print("\n🎯 Testing filtered search...")
     if doc_summary:
         first_doc = list(doc_summary.keys())[0]
