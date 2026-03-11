@@ -2,8 +2,11 @@ import json
 import logging
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 from src.core.pipeline import RAGPipeline
 
+load_dotenv()
 _log = logging.getLogger(__name__)
 
 

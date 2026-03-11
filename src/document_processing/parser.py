@@ -2,22 +2,23 @@ import base64
 import json
 import logging
 from pathlib import Path
-from typing import Dict, Any, List
-from langchain_core.documents import Document
-from langchain_core.messages import HumanMessage
+from typing import Any, Dict, List
 
 from docling.backend.docling_parse_backend import DoclingParseDocumentBackend
 from docling.datamodel.base_models import InputFormat
 from docling.datamodel.pipeline_options import PdfPipelineOptions
 from docling.document_converter import DocumentConverter, PdfFormatOption
 from docling_core.types.doc import PictureItem, TableItem
+from langchain_core.documents import Document
+from langchain_core.messages import HumanMessage
 
 _log = logging.getLogger(__name__)
+
 
 class DocumentParser:
     def __init__(self, vision_model: Any):
         self.vision_model = vision_model
-        
+
         # Initialize Docling converter
         pipeline_options = PdfPipelineOptions()
         pipeline_options.do_ocr = True
@@ -33,7 +34,7 @@ class DocumentParser:
                 ),
             }
         )
-        
+
     def _table_to_text(self, table_df):
         if table_df is None or table_df.empty:
             return "Empty table"
@@ -45,9 +46,7 @@ class DocumentParser:
             row_text = ", ".join(f"{col} = {row[col]}" for col in table_df.columns)
             rows.append(row_text)
 
-        table_text = f"Table with columns: {columns}.\nRows:\n" + "\n".join(
-            rows[:20]
-        )
+        table_text = f"Table with columns: {columns}.\nRows:\n" + "\n".join(rows[:20])
         return table_text
 
     def _encode_image(self, image_path):
@@ -67,7 +66,9 @@ class DocumentParser:
                             },
                             {
                                 "type": "image_url",
-                                "image_url": f"data:image/jpeg;base64,{base64_image}",
+                                "image_url": {
+                                    "url": f"data:image/jpeg;base64,{base64_image}"
+                                },
                             },
                         ]
                     )
@@ -78,7 +79,9 @@ class DocumentParser:
             _log.error(f"Failed to caption image {image_path}: {e}")
             return "Image captioning failed"
 
-    def extract_visual_elements(self, document, doc_name: str) -> Dict[str, List[Document]]:
+    def extract_visual_elements(
+        self, document, doc_name: str
+    ) -> Dict[str, List[Document]]:
         output_dir = Path("./extracted_elements") / doc_name
         output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -90,7 +93,7 @@ class DocumentParser:
             page_number = None
             if hasattr(element, "prov") and element.prov:
                 page_number = element.prov[0].page_no if element.prov[0] else None
-                
+
             if isinstance(element, TableItem):
                 try:
                     table_img = element.get_image(document)
@@ -115,7 +118,9 @@ class DocumentParser:
                                 "content_type": "table",
                                 "source_file": f"table_{element.label}.csv",
                                 "page_number": page_number,
-                                "page_numbers": json.dumps([page_number]) if page_number else "[]",
+                                "page_numbers": json.dumps([page_number])
+                                if page_number
+                                else "[]",
                             },
                         )
                         table_documents.append(table_doc)
@@ -123,7 +128,9 @@ class DocumentParser:
                         tables_data.append(
                             {
                                 "label": element.label,
-                                "prov": element.prov[0].to_dict() if element.prov else {},
+                                "prov": element.prov[0].to_dict()
+                                if element.prov
+                                else {},
                                 "preview": table_df.head(5).to_dict(orient="records"),
                             }
                         )
@@ -148,7 +155,9 @@ class DocumentParser:
                                 "content_type": "image",
                                 "image_path": str(img_path),
                                 "page_number": page_number,
-                                "page_numbers": json.dumps([page_number]) if page_number else "[]",
+                                "page_numbers": json.dumps([page_number])
+                                if page_number
+                                else "[]",
                             },
                         )
 
@@ -160,11 +169,8 @@ class DocumentParser:
             with open(output_dir / "tables_metadata.json", "w") as f:
                 json.dump(tables_data, f, indent=2)
             _log.info(f"Extracted {len(tables_data)} tables to {output_dir}")
-            
-        return {
-            "tables": table_documents,
-            "images": image_documents
-        }
+
+        return {"tables": table_documents, "images": image_documents}
 
     def convert_all(self, doc_paths: List[Path]):
         return self.doc_converter.convert_all(doc_paths, raises_on_error=False)

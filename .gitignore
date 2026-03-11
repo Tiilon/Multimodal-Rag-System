@@ -11,3 +11,5 @@ wheels/
 rag_db
 extracted_elements
 .mypy_cache
+.env
+rag_storage
