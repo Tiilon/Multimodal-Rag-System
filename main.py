@@ -75,9 +75,9 @@ def main():
         print(f"  Image {i + 1}: {doc.page_content[:100]}...")
 
     # Test RAG with Ollama LLM
-    # print("\n🤖 Testing RAG with Ollama LLM...")
-    # answer = rag.answer_query("Tell me about the tables and images in these documents")
-    # print(f"\nAnswer: {answer}")
+    print("\n🤖 Testing RAG with Ollama LLM...")
+    answer = rag.answer_query("Tell me about the tables and images in these documents")
+    print(f"\nAnswer: {answer}")
 
     # Test filtered search
     print("\n🎯 Testing filtered search...")
