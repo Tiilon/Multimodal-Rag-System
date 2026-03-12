@@ -14,3 +14,4 @@ extracted_elements
 .env
 rag_storage
 qdrant_storage
+.vscode
