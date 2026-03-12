@@ -68,7 +68,7 @@ async def process_documents():
     return doc_summary
 
 
-asyncio.run(process_documents())
+# asyncio.run(process_documents())
 
 
 async def main():
@@ -79,7 +79,7 @@ async def main():
     rag = RAGPipeline()
 
     # Test different search types
-    print("\nTesting multimodal search...")
+    # print("\nTesting multimodal search...")
 
     # # General search
     # test_query = "What information is in these documents?"
@@ -100,7 +100,7 @@ async def main():
 
     # Test RAG with Ollama LLM
     print("\nTesting RAG with Ollama LLM...")
-    answer = await rag.answer_query("Explain the image in page 3")
+    answer = await rag.answer_query("Explain the table in page 5")
     print(f"\nAnswer: {answer}")
 
     return rag
