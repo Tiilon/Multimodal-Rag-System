@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 from pathlib import Path
@@ -10,7 +11,7 @@ load_dotenv()
 _log = logging.getLogger(__name__)
 
 
-def process_documents():
+async def process_documents():
     data_folder = Path(__file__).parent / "data"
 
     # Only process files that actually exist
@@ -35,7 +36,7 @@ def process_documents():
     # Process all documents
     doc_summary = {}
     if input_doc_paths:
-        doc_summary = rag.process_documents(input_doc_paths)
+        doc_summary = await rag.process_documents(input_doc_paths)
 
         # Print summary
         print("\n📊 Document Processing Summary:")
@@ -67,10 +68,10 @@ def process_documents():
     return doc_summary
 
 
-# process_documents()
+asyncio.run(process_documents())
 
 
-def main():
+async def main():
     # Setup
     logging.basicConfig(level=logging.INFO)
 
@@ -80,33 +81,33 @@ def main():
     # Test different search types
     print("\nTesting multimodal search...")
 
-    # General search
-    test_query = "What information is in these documents?"
-    results = rag.search(test_query, k=3)
-    print(f"\nGeneral search results for '{test_query}': {len(results)} results")
+    # # General search
+    # test_query = "What information is in these documents?"
+    # results = rag.search(test_query, k=3)
+    # print(f"\nGeneral search results for '{test_query}': {len(results)} results")
 
-    # Table-specific search
-    table_results = rag.query_tables("Show me data tables", k=2)
-    print(f"\nTable search results: {len(table_results)} tables found")
-    for i, doc in enumerate(table_results):
-        print(f"  Table {i + 1}: {doc.page_content[:100]}...")
+    # # Table-specific search
+    # table_results = rag.query_tables("Show me data tables", k=2)
+    # print(f"\nTable search results: {len(table_results)} tables found")
+    # for i, doc in enumerate(table_results):
+    #     print(f"  Table {i + 1}: {doc.page_content[:100]}...")
 
-    # Image-specific search
-    image_results = rag.query_images("Show me diagrams and pictures", k=2)
-    print(f"\nImage search results: {len(image_results)} images found")
-    for i, doc in enumerate(image_results):
-        print(f"  Image {i + 1}: {doc.page_content[:100]}...")
+    # # Image-specific search
+    # image_results = rag.query_images("Show me diagrams and pictures", k=2)
+    # print(f"\nImage search results: {len(image_results)} images found")
+    # for i, doc in enumerate(image_results):
+    #     print(f"  Image {i + 1}: {doc.page_content[:100]}...")
 
     # Test RAG with Ollama LLM
     print("\nTesting RAG with Ollama LLM...")
-    answer = rag.answer_query("Explain the image in page 3")
+    answer = await rag.answer_query("Explain the image in page 3")
     print(f"\nAnswer: {answer}")
 
     return rag
 
 
 if __name__ == "__main__":
-    rag_pipeline = main()
+    rag_pipeline = asyncio.run(main())
 
     # Cleanup QdrantClient to prevent shutdown ImportError
     if (

@@ -1,6 +1,8 @@
 from abc import ABC, abstractmethod
-from typing import List, Dict, Optional, Any
+from typing import Any, Dict, List, Optional
+
 from langchain_core.documents import Document
+
 
 class BaseVectorStore(ABC):
     @abstractmethod
@@ -12,15 +14,27 @@ class BaseVectorStore(ABC):
         pass
 
     @abstractmethod
+    async def add_documents_async(self, documents: List[Document]):
+        pass
+
+    @abstractmethod
     def search(self, query: str, k: int = 5) -> List[Document]:
         pass
 
     @abstractmethod
-    def search_by_type(self, query: str, content_type: str, k: int = 5) -> List[Document]:
+    def search_by_page(self, query: str, page_num: int, k: int = 5) -> List[Document]:
         pass
 
     @abstractmethod
-    def search_with_filter(self, query: str, k: int = 5, filter_dict: Optional[Dict] = None) -> List[Document]:
+    def search_by_type(
+        self, query: str, content_type: str, k: int = 5
+    ) -> List[Document]:
+        pass
+
+    @abstractmethod
+    def search_with_filter(
+        self, query: str, k: int = 5, filter_dict: Optional[Dict] = None
+    ) -> List[Document]:
         pass
 
     @abstractmethod

@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from typing import Any, Dict, List, Optional
 
@@ -54,6 +55,20 @@ class ChromaVectorStore(BaseVectorStore):
             _log.error(f"Search failed: {e}")
             return []
 
+    def search_by_page(self, query: str, page_num: int, k: int = 5) -> List[Document]:
+        if not self.vector_store:
+            _log.error("Vector store not initialized")
+            return []
+        try:
+            return self.vector_store.similarity_search(
+                query,
+                k=k,
+                filter={"page_number": {"$eq": page_num}},  # ty:ignore[invalid-argument-type]
+            )
+        except Exception as e:
+            _log.error(f"Page search failed: {e}")
+            return []
+
     def search_by_type(
         self, query: str, content_type: str, k: int = 5
     ) -> List[Document]:
@@ -96,6 +111,7 @@ class ChromaVectorStore(BaseVectorStore):
     def delete_collection(self, collection_name: str) -> bool:
         try:
             import chromadb
+
             client = chromadb.PersistentClient(path=self.config.persist_directory)
             client.delete_collection(name=collection_name)
             _log.info(f"Deleted Chroma collection: {collection_name}")
@@ -103,3 +119,7 @@ class ChromaVectorStore(BaseVectorStore):
         except Exception as e:
             _log.error(f"Failed to delete Chroma collection '{collection_name}': {e}")
             return False
+
+    async def add_documents_async(self, documents: List[Document]):
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, self.add_documents, documents)

@@ -1,5 +1,7 @@
+import asyncio
 import json
 import logging
+import re
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -34,110 +36,136 @@ class RAGPipeline:
         # Store for document metadata
         self.document_metadata: Dict[str, Any] = {}
 
-    def process_documents(self, doc_paths: List[Path]) -> Dict[str, Any]:
+    async def process_documents(self, doc_paths: List[Path]) -> Dict[str, Any]:
         if not doc_paths:
             _log.warning("No documents to process")
             return {}
 
         start_time = time.time()
-
         _log.info(f"Converting {len(doc_paths)} documents...")
-        conv_results = self.parser.convert_all(doc_paths)
 
-        all_langchain_docs = []
+        # Non-blocking: Docling runs in a thread so the event loop stays free
+        conv_results = await self.parser.convert_all_async(doc_paths)
 
+        valid_pairs = []
         for idx, result in enumerate(conv_results):
             if result.document is None:
                 _log.error(f"Failed to convert {doc_paths[idx]}: {result.error}")
-                continue
+            else:
+                valid_pairs.append((result, doc_paths[idx]))
 
-            doc_path = str(doc_paths[idx])
-            doc_name = Path(doc_path).name
-            _log.info(f"Processing {doc_name}...")
+        if not valid_pairs:
+            _log.warning("No documents were successfully processed")
+            return {}
 
-            visual_elements = self.parser.extract_visual_elements(
-                result.document, doc_name
-            )
-            table_documents = visual_elements.get("tables", [])
-            image_documents = visual_elements.get("images", [])
+        # Process all documents concurrently (each runs async image captioning inside)
+        tasks = [
+            self._process_single_document(result, doc_path)
+            for result, doc_path in valid_pairs
+        ]
+        doc_docs_list = await asyncio.gather(*tasks)
 
-            chunks = self.chunker.chunk(result.document)
-            _log.info(f"Created {len(chunks)} chunks from {doc_name}")
-
-            for chunk_idx, chunk in enumerate(chunks):
-                page_numbers = (
-                    list(chunk.meta.page_numbers)
-                    if hasattr(chunk.meta, "page_numbers") and chunk.meta.page_numbers
-                    else []
-                )
-                tables = (
-                    list(chunk.meta.tables)
-                    if hasattr(chunk.meta, "tables") and chunk.meta.tables
-                    else []
-                )
-                pictures = (
-                    list(chunk.meta.pictures)
-                    if hasattr(chunk.meta, "pictures") and chunk.meta.pictures
-                    else []
-                )
-
-                metadata = {
-                    "document": doc_name,
-                    "chunk_index": chunk_idx,
-                    "source_path": doc_path,
-                    "file_type": Path(doc_path).suffix,
-                    "page_numbers": json.dumps(page_numbers),
-                    "has_tables": str(len(tables) > 0),
-                    "table_count": len(tables),
-                    "has_images": str(len(pictures) > 0),
-                    "image_count": len(pictures),
-                    "content_type": "text",
-                }
-
-                langchain_doc = Document(page_content=chunk.text, metadata=metadata)
-                all_langchain_docs.append(langchain_doc)
-
-            self.document_metadata[doc_name] = {
-                "path": doc_path,
-                "pages": len(result.document.pages),
-                "tables": len(
-                    [
-                        e
-                        for e, _ in result.document.iterate_items()
-                        if isinstance(e, TableItem)
-                    ]
-                ),
-                "images": len(
-                    [
-                        e
-                        for e, _ in result.document.iterate_items()
-                        if isinstance(e, PictureItem)
-                    ]
-                ),
-                "chunks": len(chunks),
-            }
-
-            _log.info(f"Generated {len(table_documents)} table documents")
-            _log.info(f"Generated {len(image_documents)} image documents")
-
-            all_langchain_docs.extend(table_documents)
-            all_langchain_docs.extend(image_documents)
+        all_langchain_docs = [doc for docs in doc_docs_list for doc in docs]
 
         if all_langchain_docs:
             _log.info(
                 f"Adding {len(all_langchain_docs)} total items to vector store..."
             )
-            self.vector_store.add_documents(all_langchain_docs)
+            await self.vector_store.add_documents_async(all_langchain_docs)
         else:
             _log.warning("No documents were successfully processed")
 
         elapsed = time.time() - start_time
         _log.info(f"Pipeline completed in {elapsed:.2f} seconds")
-
         return self.document_metadata
+
+    async def _process_single_document(self, result, doc_path: Path) -> List[Document]:
+        doc_path_str = str(doc_path)
+        doc_name = Path(doc_path_str).name
+        _log.info(f"Processing {doc_name}...")
+
+        # Async visual extraction: all images in this doc are captioned concurrently
+        visual_elements = await self.parser.extract_visual_elements_async(
+            result.document, doc_name
+        )
+        table_documents = visual_elements.get("tables", [])
+        image_documents = visual_elements.get("images", [])
+
+        # Chunking is CPU-light; run in a thread to avoid blocking the event loop
+        loop = asyncio.get_running_loop()
+        chunks = await loop.run_in_executor(None, self.chunker.chunk, result.document)
+        _log.info(f"Created {len(chunks)} chunks from {doc_name}")
+
+        langchain_docs = []
+        for chunk_idx, chunk in enumerate(chunks):
+            page_numbers = (
+                list(chunk.meta.page_numbers)
+                if hasattr(chunk.meta, "page_numbers") and chunk.meta.page_numbers
+                else []
+            )
+            tables = (
+                list(chunk.meta.tables)
+                if hasattr(chunk.meta, "tables") and chunk.meta.tables
+                else []
+            )
+            pictures = (
+                list(chunk.meta.pictures)
+                if hasattr(chunk.meta, "pictures") and chunk.meta.pictures
+                else []
+            )
+
+            metadata = {
+                "document": doc_name,
+                "chunk_index": chunk_idx,
+                "source_path": doc_path_str,
+                "file_type": Path(doc_path_str).suffix,
+                "page_numbers": json.dumps(page_numbers),
+                "page_number": page_numbers[0] if page_numbers else None,
+                "has_tables": str(len(tables) > 0),
+                "table_count": len(tables),
+                "has_images": str(len(pictures) > 0),
+                "image_count": len(pictures),
+                "content_type": "text",
+            }
+            langchain_docs.append(Document(page_content=chunk.text, metadata=metadata))
+
+        self.document_metadata[doc_name] = {
+            "path": doc_path_str,
+            "pages": len(result.document.pages),
+            "tables": len(
+                [
+                    e
+                    for e, _ in result.document.iterate_items()
+                    if isinstance(e, TableItem)
+                ]
+            ),
+            "images": len(
+                [
+                    e
+                    for e, _ in result.document.iterate_items()
+                    if isinstance(e, PictureItem)
+                ]
+            ),
+            "chunks": len(chunks),
+        }
+
+        _log.info(f"Generated {len(table_documents)} table documents")
+        _log.info(f"Generated {len(image_documents)} image documents")
+
+        langchain_docs.extend(table_documents)
+        langchain_docs.extend(image_documents)
+        return langchain_docs
 
     def search(self, query: str, k: int = 5) -> List[Document]:
         return self.vector_store.search(query, k=k)
+
+    @staticmethod
+    def _extract_page_from_query(query: str) -> Optional[int]:
+        match = re.search(r"\bpage\s+(\d+)\b", query, re.IGNORECASE)
+        return int(match.group(1)) if match else None
+
+    def search_by_page(self, query: str, page_num: int, k: int = 5) -> List[Document]:
+        return self.vector_store.search_by_page(query, page_num, k=k)
 
     def search_by_type(
         self, query: str, content_type: str, k: int = 5
@@ -153,7 +181,14 @@ class RAGPipeline:
         return self.vector_store.get_retriever(k=k)
 
     def get_rag_context(self, query: str, k: int = 5) -> str:
-        docs = self.search(query, k=k)
+        page_num = self._extract_page_from_query(query)
+        if page_num:
+            docs = self.search_by_page(query, page_num, k=k)
+            if not docs:
+                # Fallback to semantic search if no page-filtered results (e.g. not yet re-indexed)
+                docs = self.search(query, k=k)
+        else:
+            docs = self.search(query, k=k)
 
         if not docs:
             return "No relevant documents found."
@@ -178,8 +213,9 @@ class RAGPipeline:
 
         return "\n".join(context_parts)
 
-    def answer_query(self, query: str, k: int = 5) -> str:
+    async def answer_query(self, query: str, k: int = 5) -> str:
         context = self.get_rag_context(query, k=k)
+        print(f"\n🔍 Retrieved context for query:\n{context}\n")
 
         if context == "No relevant documents found.":
             return "I couldn't find any relevant information in the documents to answer your question."
@@ -196,7 +232,7 @@ class RAGPipeline:
 
         try:
             llm = self.llm_model.get_llm()
-            response = llm.invoke(prompt)
+            response = await llm.ainvoke(prompt)
 
             docs = self.search(query, k=k)
             sources = list(

@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
@@ -30,13 +31,18 @@ class QdrantStore(BaseVectorStore):
 
         try:
             if not client.collection_exists(self.config.collection_name):
-                _log.info(f"Collection {self.config.collection_name} does not exist. Creating it now...")
+                _log.info(
+                    f"Collection {self.config.collection_name} does not exist. Creating it now..."
+                )
                 # Determine embedding dimension
                 dummy_vector = embeddings.embed_query("init_qdrant")
-                from qdrant_client.http.models import VectorParams, Distance
+                from qdrant_client.http.models import Distance, VectorParams
+
                 client.create_collection(
                     collection_name=self.config.collection_name,
-                    vectors_config=VectorParams(size=len(dummy_vector), distance=Distance.COSINE),
+                    vectors_config=VectorParams(
+                        size=len(dummy_vector), distance=Distance.COSINE
+                    ),
                 )
         except Exception as e:
             _log.warning(f"Could not check or create collection proactively: {e}")
@@ -82,6 +88,28 @@ class QdrantStore(BaseVectorStore):
             return docs_with_scores
         except Exception as e:
             _log.error(f"Search failed: {e}")
+            return []
+
+    def search_by_page(self, query: str, page_num: int, k: int = 5) -> List[Document]:
+        if not self.vector_store:
+            _log.error("Vector store not initialized")
+            return []
+        try:
+            from qdrant_client.http import models as rest
+
+            payload_filter = rest.Filter(
+                must=[
+                    rest.FieldCondition(
+                        key="metadata.page_number",
+                        match=rest.MatchValue(value=page_num),
+                    )
+                ]
+            )
+            return self.vector_store.similarity_search(
+                query, k=k, filter=payload_filter
+            )
+        except Exception as e:
+            _log.error(f"Page search failed: {e}")
             return []
 
     def search_by_type(
@@ -164,10 +192,14 @@ class QdrantStore(BaseVectorStore):
                 )
             else:
                 client = QdrantClient(path=self.config.qdrant_path)
-            
+
             client.delete_collection(collection_name=collection_name)
             _log.info(f"Deleted Qdrant collection: {collection_name}")
             return True
         except Exception as e:
             _log.error(f"Failed to delete Qdrant collection '{collection_name}': {e}")
             return False
+
+    async def add_documents_async(self, documents: List[Document]):
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, self.add_documents, documents)

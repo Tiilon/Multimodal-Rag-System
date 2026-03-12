@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import json
 import logging
@@ -174,3 +175,144 @@ class DocumentParser:
 
     def convert_all(self, doc_paths: List[Path]):
         return self.doc_converter.convert_all(doc_paths, raises_on_error=False)
+
+    async def _caption_image_async(self, image_path) -> str:
+        try:
+            base64_image = self._encode_image(image_path)
+            response = await self.vision_model.ainvoke(
+                [
+                    HumanMessage(
+                        content=[
+                            {
+                                "type": "text",
+                                "text": "Describe this image in detail, including any text, charts, or visual elements.",
+                            },
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/jpeg;base64,{base64_image}"
+                                },
+                            },
+                        ]
+                    )
+                ]
+            )
+            return response.content
+        except Exception as e:
+            _log.error(f"Failed to caption image {image_path}: {e}")
+            return "Image captioning failed"
+
+    async def extract_visual_elements_async(
+        self, document, doc_name: str
+    ) -> Dict[str, List[Document]]:
+        """Async version of extract_visual_elements: all images are captioned concurrently."""
+        output_dir = Path("./extracted_elements") / doc_name
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        tables_data = []
+        table_documents = []
+        pending_images: List[tuple] = []  # (element, img_path, page_number)
+
+        for element, _level in document.iterate_items():
+            page_number = None
+            if hasattr(element, "prov") and element.prov:
+                page_number = element.prov[0].page_no if element.prov[0] else None
+
+            if isinstance(element, TableItem):
+                try:
+                    table_img = element.get_image(document)
+                    if table_img:
+                        img_path = output_dir / f"table_{element.label}.png"
+                        table_img.save(img_path)
+                except Exception as e:
+                    _log.debug(f"Could not save table image: {e}")
+
+                try:
+                    table_df = element.export_to_dataframe(doc=document)
+                    if table_df is not None and not table_df.empty:
+                        table_df.to_csv(output_dir / f"table_{element.label}.csv")
+                        table_text = self._table_to_text(table_df)
+
+                        table_doc = Document(
+                            page_content=table_text,
+                            metadata={
+                                "document": doc_name,
+                                "type": "table",
+                                "table_label": element.label,
+                                "content_type": "table",
+                                "source_file": f"table_{element.label}.csv",
+                                "page_number": page_number,
+                                "page_numbers": json.dumps([page_number])
+                                if page_number
+                                else "[]",
+                            },
+                        )
+                        table_documents.append(table_doc)
+
+                        tables_data.append(
+                            {
+                                "label": element.label,
+                                "prov": element.prov[0].to_dict()
+                                if element.prov
+                                else {},
+                                "preview": table_df.head(5).to_dict(orient="records"),
+                            }
+                        )
+                except Exception as e:
+                    _log.debug(f"Could not export table data: {e}")
+
+            elif isinstance(element, PictureItem):
+                try:
+                    img = element.get_image(document)
+                    if img:
+                        img_path = output_dir / f"image_{element.label}.png"
+                        img.save(img_path)
+                        pending_images.append((element, img_path, page_number))
+                except Exception as e:
+                    _log.debug(f"Could not process image: {e}")
+
+        # Caption all images in this document concurrently
+        image_documents = []
+        if pending_images:
+            captions = await asyncio.gather(
+                *[
+                    self._caption_image_async(img_path)
+                    for _, img_path, _ in pending_images
+                ]
+            )
+            for (element, img_path, page_number), caption in zip(
+                pending_images, captions
+            ):
+                image_doc = Document(
+                    page_content=f"Image description: {caption}",
+                    metadata={
+                        "document": doc_name,
+                        "type": "image",
+                        "image_label": element.label,
+                        "content_type": "image",
+                        "image_path": str(img_path),
+                        "page_number": page_number,
+                        "page_numbers": json.dumps([page_number])
+                        if page_number
+                        else "[]",
+                    },
+                )
+                image_documents.append(image_doc)
+
+        if tables_data:
+            with open(output_dir / "tables_metadata.json", "w") as f:
+                json.dump(tables_data, f, indent=2)
+            _log.info(f"Extracted {len(tables_data)} tables to {output_dir}")
+
+        return {"tables": table_documents, "images": image_documents}
+
+    async def convert_all_async(self, doc_paths: List[Path]):
+        """Run the blocking Docling conversion in a thread so the event loop stays free."""
+        loop = asyncio.get_running_loop()
+
+        def _convert():
+            return list(
+                self.doc_converter.convert_all(doc_paths, raises_on_error=False)
+            )
+
+        return await loop.run_in_executor(None, _convert)
