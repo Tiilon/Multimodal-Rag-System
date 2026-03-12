@@ -3,7 +3,7 @@ import base64
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from docling.backend.docling_parse_backend import DoclingParseDocumentBackend
 from docling.datamodel.base_models import InputFormat
@@ -35,6 +35,33 @@ class DocumentParser:
                 ),
             }
         )
+
+    def _get_page_numbers(self, element: Any) -> List[int]:
+        page_numbers: List[int] = []
+        if not hasattr(element, "prov") or not element.prov:
+            return page_numbers
+
+        for provenance in element.prov:
+            page_no = getattr(provenance, "page_no", None)
+            if isinstance(page_no, int) and page_no not in page_numbers:
+                page_numbers.append(page_no)
+
+        return page_numbers
+
+    def _get_primary_page_number(self, element: Any) -> Optional[int]:
+        page_numbers = self._get_page_numbers(element)
+        return min(page_numbers) if page_numbers else None
+
+    def _build_visual_basename(
+        self, prefix: str, page_number: Optional[int], index: int
+    ) -> str:
+        page_token = f"p{page_number}" if page_number is not None else "punknown"
+        return f"{prefix}_{page_token}_{index:03d}"
+
+    def _get_provenance_metadata(self, element: Any) -> List[Dict[str, Any]]:
+        if not hasattr(element, "prov") or not element.prov:
+            return []
+        return [provenance.to_dict() for provenance in element.prov]
 
     def _table_to_text(self, table_df):
         if table_df is None or table_df.empty:
@@ -89,17 +116,22 @@ class DocumentParser:
         tables_data = []
         table_documents = []
         image_documents = []
+        table_index = 0
+        image_index = 0
 
         for element, _level in document.iterate_items():
-            page_number = None
-            if hasattr(element, "prov") and element.prov:
-                page_number = element.prov[0].page_no if element.prov[0] else None
+            page_numbers = self._get_page_numbers(element)
+            page_number = self._get_primary_page_number(element)
 
             if isinstance(element, TableItem):
+                table_index += 1
+                table_basename = self._build_visual_basename(
+                    "table", page_number, table_index
+                )
                 try:
                     table_img = element.get_image(document)
                     if table_img:
-                        img_path = output_dir / f"table_{element.label}.png"
+                        img_path = output_dir / f"{table_basename}.png"
                         table_img.save(img_path)
                 except Exception as e:
                     _log.debug(f"Could not save table image: {e}")
@@ -107,7 +139,8 @@ class DocumentParser:
                 try:
                     table_df = element.export_to_dataframe(doc=document)
                     if table_df is not None and not table_df.empty:
-                        table_df.to_csv(output_dir / f"table_{element.label}.csv")
+                        csv_filename = f"{table_basename}.csv"
+                        table_df.to_csv(output_dir / csv_filename)
                         table_text = self._table_to_text(table_df)
 
                         table_doc = Document(
@@ -115,12 +148,13 @@ class DocumentParser:
                             metadata={
                                 "document": doc_name,
                                 "type": "table",
-                                "table_label": element.label,
+                                "table_label": str(element.label),
+                                "table_id": table_basename,
                                 "content_type": "table",
-                                "source_file": f"table_{element.label}.csv",
+                                "source_file": csv_filename,
                                 "page_number": page_number,
-                                "page_numbers": json.dumps([page_number])
-                                if page_number
+                                "page_numbers": json.dumps(page_numbers)
+                                if page_numbers
                                 else "[]",
                             },
                         )
@@ -128,10 +162,11 @@ class DocumentParser:
 
                         tables_data.append(
                             {
-                                "label": element.label,
-                                "prov": element.prov[0].to_dict()
-                                if element.prov
-                                else {},
+                                "label": str(element.label),
+                                "table_id": table_basename,
+                                "page_number": page_number,
+                                "page_numbers": page_numbers,
+                                "prov": self._get_provenance_metadata(element),
                                 "preview": table_df.head(5).to_dict(orient="records"),
                             }
                         )
@@ -139,10 +174,14 @@ class DocumentParser:
                     _log.debug(f"Could not export table data: {e}")
 
             elif isinstance(element, PictureItem):
+                image_index += 1
+                image_basename = self._build_visual_basename(
+                    "image", page_number, image_index
+                )
                 try:
                     img = element.get_image(document)
                     if img:
-                        img_path = output_dir / f"image_{element.label}.png"
+                        img_path = output_dir / f"{image_basename}.png"
                         img.save(img_path)
 
                         caption = self._caption_image(img_path)
@@ -152,12 +191,13 @@ class DocumentParser:
                             metadata={
                                 "document": doc_name,
                                 "type": "image",
-                                "image_label": element.label,
+                                "image_label": str(element.label),
+                                "image_id": image_basename,
                                 "content_type": "image",
                                 "image_path": str(img_path),
                                 "page_number": page_number,
-                                "page_numbers": json.dumps([page_number])
-                                if page_number
+                                "page_numbers": json.dumps(page_numbers)
+                                if page_numbers
                                 else "[]",
                             },
                         )
@@ -211,18 +251,23 @@ class DocumentParser:
 
         tables_data = []
         table_documents = []
-        pending_images: List[tuple] = []  # (element, img_path, page_number)
+        pending_images: List[tuple] = []
+        table_index = 0
+        image_index = 0
 
         for element, _level in document.iterate_items():
-            page_number = None
-            if hasattr(element, "prov") and element.prov:
-                page_number = element.prov[0].page_no if element.prov[0] else None
+            page_numbers = self._get_page_numbers(element)
+            page_number = self._get_primary_page_number(element)
 
             if isinstance(element, TableItem):
+                table_index += 1
+                table_basename = self._build_visual_basename(
+                    "table", page_number, table_index
+                )
                 try:
                     table_img = element.get_image(document)
                     if table_img:
-                        img_path = output_dir / f"table_{element.label}.png"
+                        img_path = output_dir / f"{table_basename}.png"
                         table_img.save(img_path)
                 except Exception as e:
                     _log.debug(f"Could not save table image: {e}")
@@ -230,7 +275,8 @@ class DocumentParser:
                 try:
                     table_df = element.export_to_dataframe(doc=document)
                     if table_df is not None and not table_df.empty:
-                        table_df.to_csv(output_dir / f"table_{element.label}.csv")
+                        csv_filename = f"{table_basename}.csv"
+                        table_df.to_csv(output_dir / csv_filename)
                         table_text = self._table_to_text(table_df)
 
                         table_doc = Document(
@@ -238,12 +284,13 @@ class DocumentParser:
                             metadata={
                                 "document": doc_name,
                                 "type": "table",
-                                "table_label": element.label,
+                                "table_label": str(element.label),
+                                "table_id": table_basename,
                                 "content_type": "table",
-                                "source_file": f"table_{element.label}.csv",
+                                "source_file": csv_filename,
                                 "page_number": page_number,
-                                "page_numbers": json.dumps([page_number])
-                                if page_number
+                                "page_numbers": json.dumps(page_numbers)
+                                if page_numbers
                                 else "[]",
                             },
                         )
@@ -251,10 +298,11 @@ class DocumentParser:
 
                         tables_data.append(
                             {
-                                "label": element.label,
-                                "prov": element.prov[0].to_dict()
-                                if element.prov
-                                else {},
+                                "label": str(element.label),
+                                "table_id": table_basename,
+                                "page_number": page_number,
+                                "page_numbers": page_numbers,
+                                "prov": self._get_provenance_metadata(element),
                                 "preview": table_df.head(5).to_dict(orient="records"),
                             }
                         )
@@ -262,12 +310,18 @@ class DocumentParser:
                     _log.debug(f"Could not export table data: {e}")
 
             elif isinstance(element, PictureItem):
+                image_index += 1
+                image_basename = self._build_visual_basename(
+                    "image", page_number, image_index
+                )
                 try:
                     img = element.get_image(document)
                     if img:
-                        img_path = output_dir / f"image_{element.label}.png"
+                        img_path = output_dir / f"{image_basename}.png"
                         img.save(img_path)
-                        pending_images.append((element, img_path, page_number))
+                        pending_images.append(
+                            (element, img_path, page_number, page_numbers, image_basename)
+                        )
                 except Exception as e:
                     _log.debug(f"Could not process image: {e}")
 
@@ -277,10 +331,10 @@ class DocumentParser:
             captions = await asyncio.gather(
                 *[
                     self._caption_image_async(img_path)
-                    for _, img_path, _ in pending_images
+                    for _, img_path, _, _, _ in pending_images
                 ]
             )
-            for (element, img_path, page_number), caption in zip(
+            for (element, img_path, page_number, page_numbers, image_basename), caption in zip(
                 pending_images, captions
             ):
                 image_doc = Document(
@@ -288,12 +342,13 @@ class DocumentParser:
                     metadata={
                         "document": doc_name,
                         "type": "image",
-                        "image_label": element.label,
+                        "image_label": str(element.label),
+                        "image_id": image_basename,
                         "content_type": "image",
                         "image_path": str(img_path),
                         "page_number": page_number,
-                        "page_numbers": json.dumps([page_number])
-                        if page_number
+                        "page_numbers": json.dumps(page_numbers)
+                        if page_numbers
                         else "[]",
                     },
                 )
