@@ -320,7 +320,13 @@ class DocumentParser:
                         img_path = output_dir / f"{image_basename}.png"
                         img.save(img_path)
                         pending_images.append(
-                            (element, img_path, page_number, page_numbers, image_basename)
+                            (
+                                element,
+                                img_path,
+                                page_number,
+                                page_numbers,
+                                image_basename,
+                            )
                         )
                 except Exception as e:
                     _log.debug(f"Could not process image: {e}")
@@ -334,9 +340,13 @@ class DocumentParser:
                     for _, img_path, _, _, _ in pending_images
                 ]
             )
-            for (element, img_path, page_number, page_numbers, image_basename), caption in zip(
-                pending_images, captions
-            ):
+            for (
+                element,
+                img_path,
+                page_number,
+                page_numbers,
+                image_basename,
+            ), caption in zip(pending_images, captions):
                 image_doc = Document(
                     page_content=f"Image description: {caption}",
                     metadata={

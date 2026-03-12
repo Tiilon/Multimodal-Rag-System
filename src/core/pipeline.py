@@ -36,6 +36,23 @@ class RAGPipeline:
         # Store for document metadata
         self.document_metadata: Dict[str, Any] = {}
 
+    @staticmethod
+    def _get_chunk_page_numbers(chunk: Any) -> List[int]:
+        meta = getattr(chunk, "meta", None)
+        doc_items = getattr(meta, "doc_items", None)
+        if not doc_items:
+            return []
+
+        page_numbers: List[int] = []
+        for doc_item in doc_items:
+            provenance_items = getattr(doc_item, "prov", None) or []
+            for provenance in provenance_items:
+                page_no = getattr(provenance, "page_no", None)
+                if isinstance(page_no, int) and page_no not in page_numbers:
+                    page_numbers.append(page_no)
+
+        return page_numbers
+
     async def process_documents(self, doc_paths: List[Path]) -> Dict[str, Any]:
         if not doc_paths:
             _log.warning("No documents to process")
@@ -98,11 +115,7 @@ class RAGPipeline:
 
         langchain_docs = []
         for chunk_idx, chunk in enumerate(chunks):
-            page_numbers = (
-                list(chunk.meta.page_numbers)
-                if hasattr(chunk.meta, "page_numbers") and chunk.meta.page_numbers
-                else []
-            )
+            page_numbers = self._get_chunk_page_numbers(chunk)
             tables = (
                 list(chunk.meta.tables)
                 if hasattr(chunk.meta, "tables") and chunk.meta.tables
